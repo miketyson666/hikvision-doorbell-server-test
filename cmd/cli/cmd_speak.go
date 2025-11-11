@@ -80,21 +80,34 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to add track: %w", err)
 	}
 
+	// Wait for ICE gathering to complete
+	gatherComplete := make(chan struct{})
+	peerConnection.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
+		log.Printf("ICE Gathering State: %s", state.String())
+		if state == webrtc.ICEGatheringStateComplete {
+			close(gatherComplete)
+		}
+	})
+
 	// Create offer
 	offer, err := peerConnection.CreateOffer(nil)
 	if err != nil {
 		return fmt.Errorf("failed to create offer: %w", err)
 	}
 
-	// Set local description
+	// Set local description (this triggers ICE gathering)
 	err = peerConnection.SetLocalDescription(offer)
 	if err != nil {
 		return fmt.Errorf("failed to set local description: %w", err)
 	}
 
-	// Send offer to server
+	// Wait for ICE gathering to complete
+	log.Println("Gathering ICE candidates...")
+	<-gatherComplete
+
+	// Send offer to server (now with all ICE candidates)
 	log.Println("Connecting to server...")
-	answer, err := sendOffer(serverAddr, offer)
+	answer, err := sendOffer(serverAddr, *peerConnection.LocalDescription())
 	if err != nil {
 		return fmt.Errorf("failed to send offer: %w", err)
 	}

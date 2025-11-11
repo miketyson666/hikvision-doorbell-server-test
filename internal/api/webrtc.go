@@ -222,6 +222,15 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Wait for ICE gathering to complete
+	gatherComplete := make(chan struct{})
+	peerConnection.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
+		log.Printf("[WebRTC] ICE Gathering State: %s", state.String())
+		if state == webrtc.ICEGatheringStateComplete {
+			close(gatherComplete)
+		}
+	})
+
 	// Create answer
 	answer, err := peerConnection.CreateAnswer(nil)
 	if err != nil {
@@ -230,7 +239,7 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set local description
+	// Set local description (this triggers ICE gathering)
 	err = peerConnection.SetLocalDescription(answer)
 	if err != nil {
 		log.Printf("[WebRTC] Failed to set local description: %v", err)
@@ -238,9 +247,13 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send answer back to client
+	// Wait for ICE gathering to complete
+	log.Println("[WebRTC] Gathering ICE candidates...")
+	<-gatherComplete
+
+	// Send answer back to client (now with all ICE candidates)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(answer)
+	json.NewEncoder(w).Encode(peerConnection.LocalDescription())
 
 	log.Println("[WebRTC] SDP answer sent successfully")
 }
