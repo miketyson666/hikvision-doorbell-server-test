@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -49,12 +50,26 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		ICEServers: []webrtc.ICEServer{},
 	}
 
-	// Create a SettingEngine for local network use
+	// Create a SettingEngine with fixed UDP ports
 	settingEngine := webrtc.SettingEngine{}
 	settingEngine.SetNetworkTypes([]webrtc.NetworkType{
-		webrtc.NetworkTypeTCP4,
 		webrtc.NetworkTypeUDP4,
 	})
+
+	// Use single fixed UDP port (single user)
+	if err := settingEngine.SetEphemeralUDPPortRange(50000, 50000); err != nil {
+		log.Printf("[WebRTC] Failed to set port range: %v", err)
+		http.Error(w, "Failed to configure WebRTC", http.StatusInternalServerError)
+		return
+	}
+
+	// Get public IP from environment variable for NAT traversal
+	// Set this to the LoadBalancer IP or public hostname
+	publicIP := os.Getenv("WEBRTC_PUBLIC_IP")
+	if publicIP != "" {
+		log.Printf("[WebRTC] Using public IP for ICE: %s", publicIP)
+		settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
+	}
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
 
