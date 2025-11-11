@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,12 +64,24 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get public IP from environment variable for NAT traversal
-	// Set this to the LoadBalancer IP or public hostname
+	// Get public IP from environment variable or file for NAT traversal
 	publicIP := os.Getenv("WEBRTC_PUBLIC_IP")
+	if publicIP == "" {
+		// Try to read from file (set by init container)
+		if ipFile := os.Getenv("WEBRTC_PUBLIC_IP_FILE"); ipFile != "" {
+			if data, err := os.ReadFile(ipFile); err == nil {
+				publicIP = string(data)
+				publicIP = strings.TrimSpace(publicIP)
+			} else {
+				log.Printf("[WebRTC] Warning: Could not read IP from file %s: %v", ipFile, err)
+			}
+		}
+	}
 	if publicIP != "" {
 		log.Printf("[WebRTC] Using public IP for ICE: %s", publicIP)
 		settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
+	} else {
+		log.Printf("[WebRTC] Warning: No public IP configured, ICE candidates may not work over NAT/VPN")
 	}
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
