@@ -95,7 +95,6 @@ func (l *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 		wwwAuth := resp.Header.Get("WWW-Authenticate")
 		// If we get 401 with empty auth header, retry once
 		if wwwAuth == "" {
-			log.Printf("[Hikvision] Empty WWW-Authenticate header, retrying request...")
 			resp.Body.Close()
 
 			// Clone the request for retry
