@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/acardace/hikvision-doorbell-server/internal/audio"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/spf13/cobra"
@@ -66,7 +67,7 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 
 	// Create audio track for PCMU (G.711 µ-law)
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU},
+		webrtc.RTPCodecCapability{MimeType: audio.CodecMimeType},
 		"audio",
 		"doorbell-cli",
 	)
@@ -137,7 +138,7 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 		// Start ffplay to play incoming audio
 		ffplayArgs := []string{
 			"-f", "mulaw", // G.711 µ-law format
-			"-sample_rate", "8000", // Sample rate
+			"-sample_rate", fmt.Sprintf("%d", audio.SampleRate),
 			"-ch_layout", "mono", // Mono
 			"-nodisp",   // No video display
 			"-autoexit", // Exit when done
@@ -194,13 +195,13 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 	ffmpegArgs := []string{
 		"-f", "alsa", // Linux audio input
 		"-i", inputDevice, // Input device
-		"-sample_rate", "8000", // Sample rate: 8000 Hz
+		"-sample_rate", fmt.Sprintf("%d", audio.SampleRate),
 		"-ch_layout", "mono", // Channels: mono
 		"-f", "mulaw", // Output format: G.711 µ-law
 		"-", // Output to stdout
 	}
 
-	log.Printf("Starting microphone capture (device: %s, format: G.711µ-law, 8000Hz, mono)", inputDevice)
+	log.Printf("Starting microphone capture (device: %s, format: G.711µ-law, %dHz, mono)", inputDevice, audio.SampleRate)
 	ffmpegCmd := exec.Command("ffmpeg", ffmpegArgs...)
 
 	ffmpegStdout, err := ffmpegCmd.StdoutPipe()
@@ -241,7 +242,7 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 	totalBytes := 0
 
 	go func() {
-		buffer := make([]byte, 160) // 20ms of audio at 8000Hz (160 samples for G.711)
+		buffer := make([]byte, audio.SampleSize)
 		for {
 			n, err := ffmpegStdout.Read(buffer)
 			if err != nil {
@@ -259,7 +260,7 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 				// Send via WebRTC track
 				if err := audioTrack.WriteSample(media.Sample{
 					Data:     buffer[:n],
-					Duration: time.Millisecond * 20,
+					Duration: audio.SampleDuration,
 				}); err != nil {
 					done <- fmt.Errorf("failed to send audio sample: %w", err)
 					return

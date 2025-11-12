@@ -3,14 +3,15 @@ package api
 import (
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/acardace/hikvision-doorbell-server/internal/audio"
 	"github.com/acardace/hikvision-doorbell-server/internal/hikvision"
+	"github.com/acardace/hikvision-doorbell-server/internal/logger"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -38,12 +39,16 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Parse SDP offer
 	var offer webrtc.SessionDescription
 	if err := json.NewDecoder(r.Body).Decode(&offer); err != nil {
-		log.Printf("[WebRTC] Failed to decode offer: %v", err)
+		logger.Log.Error("failed to decode SDP offer",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Invalid offer", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[WebRTC] Received offer type: %s", offer.Type)
+	logger.Log.Info("received SDP offer",
+		slog.String("component", "webrtc"),
+		slog.String("type", offer.Type.String()))
 
 	// Create WebRTC configuration for local network only
 	// No ICE servers needed - this is meant for local/VPN use only
@@ -59,7 +64,9 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 
 	// Use single fixed UDP port (single user)
 	if err := settingEngine.SetEphemeralUDPPortRange(50000, 50000); err != nil {
-		log.Printf("[WebRTC] Failed to set port range: %v", err)
+		logger.Log.Error("failed to set UDP port range",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to configure WebRTC", http.StatusInternalServerError)
 		return
 	}
@@ -73,15 +80,21 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 				publicIP = string(data)
 				publicIP = strings.TrimSpace(publicIP)
 			} else {
-				log.Printf("[WebRTC] Warning: Could not read IP from file %s: %v", ipFile, err)
+				logger.Log.Warn("could not read public IP from file",
+					slog.String("component", "webrtc"),
+					slog.String("file", ipFile),
+					slog.String("error", err.Error()))
 			}
 		}
 	}
 	if publicIP != "" {
-		log.Printf("[WebRTC] Using public IP for ICE: %s", publicIP)
+		logger.Log.Info("using public IP for ICE candidates",
+			slog.String("component", "webrtc"),
+			slog.String("ip", publicIP))
 		settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
 	} else {
-		log.Printf("[WebRTC] Warning: No public IP configured, ICE candidates may not work over NAT/VPN")
+		logger.Log.Warn("no public IP configured, ICE candidates may not work over NAT/VPN",
+			slog.String("component", "webrtc"))
 	}
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
@@ -89,7 +102,9 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Create new peer connection using the custom API
 	peerConnection, err := api.NewPeerConnection(config)
 	if err != nil {
-		log.Printf("[WebRTC] Failed to create peer connection: %v", err)
+		logger.Log.Error("failed to create peer connection",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to create peer connection", http.StatusInternalServerError)
 		return
 	}
@@ -98,12 +113,14 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 
 	// Create outgoing audio track for sending audio from doorbell to client
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU},
+		webrtc.RTPCodecCapability{MimeType: audio.CodecMimeType},
 		"audio",
 		"doorbell-audio",
 	)
 	if err != nil {
-		log.Printf("[WebRTC] Failed to create audio track: %v", err)
+		logger.Log.Error("failed to create audio track",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to create audio track", http.StatusInternalServerError)
 		return
 	}
@@ -111,28 +128,35 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Add track to peer connection
 	_, err = peerConnection.AddTrack(audioTrack)
 	if err != nil {
-		log.Printf("[WebRTC] Failed to add track: %v", err)
+		logger.Log.Error("failed to add track to peer connection",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to add track", http.StatusInternalServerError)
 		return
 	}
 
 	// Handle incoming audio track (from browser/client to doorbell)
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		log.Printf("[WebRTC] Received track: %s, codec: %s", track.Kind(), track.Codec().MimeType)
+		logger.Log.Info("received remote track",
+			slog.String("component", "webrtc"),
+			slog.String("kind", track.Kind().String()),
+			slog.String("codec", track.Codec().MimeType))
 
 		// Start session if not already active
 		if h.activeSession == nil {
-			log.Println("[WebRTC] Starting audio session...")
+			logger.Log.Info("starting audio session", slog.String("component", "webrtc"))
 
 			// Get available channels
 			channels, err := h.hikClient.GetTwoWayAudioChannels()
 			if err != nil {
-				log.Printf("[WebRTC] Failed to get channels: %v", err)
+				logger.Log.Error("failed to get audio channels",
+					slog.String("component", "webrtc"),
+					slog.String("error", err.Error()))
 				return
 			}
 
 			if len(channels.Channels) == 0 {
-				log.Println("[WebRTC] No audio channels available")
+				logger.Log.Warn("no audio channels available", slog.String("component", "webrtc"))
 				return
 			}
 
@@ -146,13 +170,17 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if channelID == "" {
-				log.Println("[WebRTC] No available channels (all in use)")
+				logger.Log.Warn("no available channels, all in use",
+					slog.String("component", "webrtc"))
 				return
 			}
 
 			session, err := h.hikClient.OpenAudioChannel(channelID)
 			if err != nil {
-				log.Printf("[WebRTC] Failed to open audio channel: %v", err)
+				logger.Log.Error("failed to open audio channel",
+					slog.String("component", "webrtc"),
+					slog.String("channel_id", channelID),
+					slog.String("error", err.Error()))
 				return
 			}
 			h.activeSession = session
@@ -166,66 +194,75 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 			h.audioReader.Start()
 
 			// Start goroutine to read from doorbell and send via WebRTC
-			go func() {
-				defer log.Println("[WebRTC] Stopped reading from doorbell")
-				const sampleSize = 160 // 20ms of G.711 audio at 8000Hz
+			// Pass audioReader as parameter to avoid race condition with cleanup()
+			go func(reader *hikvision.AudioStreamReader, track *webrtc.TrackLocalStaticSample) {
+				defer logger.Log.Info("stopped reading audio from doorbell", slog.String("component", "webrtc"))
 
-				// Use io.ReadFull to read exactly 160 bytes at a time
-				buffer := make([]byte, sampleSize)
+				// Use io.ReadFull to read exactly audio.SampleSize bytes at a time
+				buffer := make([]byte, audio.SampleSize)
 
 				for {
-					// Read exactly sampleSize bytes
-					n, err := io.ReadFull(h.audioReader, buffer)
+					// Read exactly audio.SampleSize bytes
+					n, err := io.ReadFull(reader, buffer)
 					if err != nil {
 						if err != io.EOF && err != io.ErrUnexpectedEOF {
-							log.Printf("[WebRTC] Error reading from doorbell: %v", err)
+							logger.Log.Error("error reading from doorbell",
+								slog.String("component", "webrtc"),
+								slog.String("error", err.Error()))
 						}
 						return
 					}
 
 					// Send to WebRTC track with precise timing
-					if err := audioTrack.WriteSample(media.Sample{
+					if err := track.WriteSample(media.Sample{
 						Data:     buffer[:n],
-						Duration: time.Millisecond * 20,
+						Duration: audio.SampleDuration,
 					}); err != nil {
-						log.Printf("[WebRTC] Error sending sample: %v", err)
+						logger.Log.Error("error sending audio sample to client",
+							slog.String("component", "webrtc"),
+							slog.String("error", err.Error()))
 						return
 					}
 				}
-			}()
+			}(h.audioReader, audioTrack)
 		}
 
 		// Read RTP packets and send to doorbell
-		go func() {
+		// Pass audioWriter as parameter to avoid race condition with cleanup()
+		go func(writer *hikvision.AudioStreamWriter, remoteTrack *webrtc.TrackRemote) {
 			defer func() {
-				log.Println("[WebRTC] Track ended, cleaning up...")
+				logger.Log.Info("track ended, cleaning up session", slog.String("component", "webrtc"))
 				h.cleanup()
 			}()
 
 			for {
-				rtp, _, err := track.ReadRTP()
+				rtp, _, err := remoteTrack.ReadRTP()
 				if err != nil {
 					if err != io.EOF {
-						log.Printf("[WebRTC] Error reading RTP: %v", err)
+						logger.Log.Error("error reading RTP packet",
+							slog.String("component", "webrtc"),
+							slog.String("error", err.Error()))
 					}
 					return
 				}
 
 				// Send audio payload to doorbell
-				if h.audioWriter != nil {
-					_, err = h.audioWriter.Write(rtp.Payload)
-					if err != nil {
-						log.Printf("[WebRTC] Error writing audio: %v", err)
-						return
-					}
+				_, err = writer.Write(rtp.Payload)
+				if err != nil {
+					logger.Log.Error("error writing audio to doorbell",
+						slog.String("component", "webrtc"),
+						slog.String("error", err.Error()))
+					return
 				}
 			}
-		}()
+		}(h.audioWriter, track)
 	})
 
 	// Handle connection state changes
 	peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("[WebRTC] Connection state changed: %s", state.String())
+		logger.Log.Info("connection state changed",
+			slog.String("component", "webrtc"),
+			slog.String("state", state.String()))
 
 		if state == webrtc.PeerConnectionStateFailed ||
 			state == webrtc.PeerConnectionStateClosed ||
@@ -237,7 +274,9 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Set remote description (client's offer)
 	err = peerConnection.SetRemoteDescription(offer)
 	if err != nil {
-		log.Printf("[WebRTC] Failed to set remote description: %v", err)
+		logger.Log.Error("failed to set remote description",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to set remote description", http.StatusInternalServerError)
 		return
 	}
@@ -245,18 +284,21 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Log ICE candidates for debugging
 	peerConnection.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate != nil {
-			log.Printf("[WebRTC] Server ICE candidate: type=%s protocol=%s address=%s port=%d",
-				candidate.Typ.String(),
-				candidate.Protocol.String(),
-				candidate.Address,
-				candidate.Port)
+			logger.Log.Debug("generated ICE candidate",
+				slog.String("component", "webrtc"),
+				slog.String("type", candidate.Typ.String()),
+				slog.String("protocol", candidate.Protocol.String()),
+				slog.String("address", candidate.Address),
+				slog.Int("port", int(candidate.Port)))
 		}
 	})
 
 	// Wait for ICE gathering to complete
 	gatherComplete := make(chan struct{})
 	peerConnection.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
-		log.Printf("[WebRTC] ICE Gathering State: %s", state.String())
+		logger.Log.Info("ICE gathering state changed",
+			slog.String("component", "webrtc"),
+			slog.String("state", state.String()))
 		if state == webrtc.ICEGatheringStateComplete {
 			close(gatherComplete)
 		}
@@ -265,7 +307,9 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Create answer
 	answer, err := peerConnection.CreateAnswer(nil)
 	if err != nil {
-		log.Printf("[WebRTC] Failed to create answer: %v", err)
+		logger.Log.Error("failed to create SDP answer",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to create answer", http.StatusInternalServerError)
 		return
 	}
@@ -273,20 +317,22 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// Set local description (this triggers ICE gathering)
 	err = peerConnection.SetLocalDescription(answer)
 	if err != nil {
-		log.Printf("[WebRTC] Failed to set local description: %v", err)
+		logger.Log.Error("failed to set local description",
+			slog.String("component", "webrtc"),
+			slog.String("error", err.Error()))
 		http.Error(w, "Failed to set local description", http.StatusInternalServerError)
 		return
 	}
 
 	// Wait for ICE gathering to complete
-	log.Println("[WebRTC] Gathering ICE candidates...")
+	logger.Log.Info("waiting for ICE gathering to complete", slog.String("component", "webrtc"))
 	<-gatherComplete
 
 	// Send answer back to client (now with all ICE candidates)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(peerConnection.LocalDescription())
 
-	log.Println("[WebRTC] SDP answer sent successfully")
+	logger.Log.Info("SDP answer sent successfully", slog.String("component", "webrtc"))
 }
 
 // cleanup closes the session and cleans up resources
