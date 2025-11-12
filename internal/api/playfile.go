@@ -16,10 +16,10 @@ import (
 // This automatically manages the session lifecycle
 func HandlePlayFile(hikClient *hikvision.Client, abortManager *AbortManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Check if there's an active WebRTC session
-		if abortManager.HasActiveWebRTC() {
-			log.Println("[PlayFile] Rejected: WebRTC session is active")
-			http.Error(w, "Cannot play file while WebRTC session is active", http.StatusConflict)
+		// Check if there's an active op
+		if abortManager.HasActiveOperation() {
+			log.Println("[PlayFile] Rejected: another session is active")
+			http.Error(w, "Cannot play file while another session is active", http.StatusConflict)
 			return
 		}
 
@@ -29,7 +29,10 @@ func HandlePlayFile(hikClient *hikvision.Client, abortManager *AbortManager) htt
 
 		// Register with abort manager
 		op := abortManager.Register(OperationTypePlayFile, cancel)
-		defer abortManager.Unregister(op)
+		defer func() {
+			abortManager.Unregister(op)
+			op.Cleanup.Done() // Signal cleanup completion
+		}()
 
 		log.Println("[PlayFile] Received request to play audio file")
 
@@ -71,7 +74,8 @@ func HandlePlayFile(hikClient *hikvision.Client, abortManager *AbortManager) htt
 		// Ensure we close the channel when done
 		defer func() {
 			log.Println("[PlayFile] Closing audio channel...")
-			sessionManager.ReleaseChannel(ctx, session.ChannelID)
+			// Use Background context for cleanup to ensure it completes even if operation was cancelled
+			sessionManager.ReleaseChannel(context.Background(), session.ChannelID)
 		}()
 
 		// Create audio writer
@@ -92,6 +96,7 @@ func HandlePlayFile(hikClient *hikvision.Client, abortManager *AbortManager) htt
 		for i := 0; i < len(audioData); i += chunkSize {
 			select {
 			case <-ctx.Done():
+				http.Error(w, "Operation interrupted", http.StatusServiceUnavailable)
 				return
 			default:
 				end := i + chunkSize
@@ -118,6 +123,7 @@ func HandlePlayFile(hikClient *hikvision.Client, abortManager *AbortManager) htt
 
 		select {
 		case <-ctx.Done():
+			http.Error(w, "Operation interrupted", http.StatusServiceUnavailable)
 			return
 		case <-time.After(audioDuration):
 			log.Println("[PlayFile] Playback complete")

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/acardace/hikvision-doorbell-server/internal/audio"
+	"github.com/acardace/hikvision-doorbell-server/internal/hikvision"
 	"github.com/acardace/hikvision-doorbell-server/internal/logger"
 	"github.com/acardace/hikvision-doorbell-server/internal/session"
 	"github.com/acardace/hikvision-doorbell-server/internal/streaming"
@@ -16,6 +17,7 @@ import (
 
 type WebRTCHandler struct {
 	config         *WebRTCConfig
+	hikClient      *hikvision.Client
 	sessionManager session.SessionManager
 	audioStreamer  streaming.AudioStreamer
 	abortManager   *AbortManager
@@ -26,14 +28,14 @@ type WebRTCHandler struct {
 	cancelFunc     context.CancelFunc // Cancel function for goroutines
 }
 
-func NewWebRTCHandler(sessionManager session.SessionManager, audioStreamer streaming.AudioStreamer, abortManager *AbortManager) *WebRTCHandler {
+func NewWebRTCHandler(hikClient *hikvision.Client, sessionManager session.SessionManager, abortManager *AbortManager) *WebRTCHandler {
 	config := NewWebRTCConfig()
 	config.LoadFromEnv()
 
 	return &WebRTCHandler{
 		config:         config,
+		hikClient:      hikClient,
 		sessionManager: sessionManager,
-		audioStreamer:  audioStreamer,
 		abortManager:   abortManager,
 	}
 }
@@ -55,8 +57,14 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancelFunc = cancel
 
-	// Register WebRTC operation with abort manager
+	// Register WebRTC operation with abort manager FIRST
+	// This ensures AbortPlayFileOperations won't affect this WebRTC session
 	h.activeOp = h.abortManager.Register(OperationTypeWebRTC, cancel)
+
+	// Abort any ongoing play-file operations to free up the channel
+	// WebRTC connections take precedence
+	logger.Log.Info("aborting any active play-file operations", slog.String("component", "webrtc"))
+	h.abortManager.AbortPlayFileOperations(ctx)
 
 	// Parse SDP offer
 	var offer webrtc.SessionDescription
@@ -116,11 +124,6 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		if h.activeSession == nil {
 			logger.Log.Info("acquiring audio session", slog.String("component", "webrtc"))
 
-			// Abort any ongoing play-file operations to free up the channel
-			// WebRTC connections take precedence
-			logger.Log.Info("aborting any active play-file operations", slog.String("component", "webrtc"))
-			h.abortManager.AbortPlayFileOperations(ctx)
-
 			// Acquire session using session manager
 			sess, err := h.sessionManager.AcquireChannel(ctx)
 			if err != nil {
@@ -130,6 +133,9 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			h.activeSession = sess
+
+			// Create a fresh audio streamer for this session
+			h.audioStreamer = streaming.NewHikvisionAudioStreamer(h.hikClient)
 
 			// Start audio streaming
 			if err := h.audioStreamer.Start(ctx, sess); err != nil {
@@ -274,6 +280,7 @@ func (h *WebRTCHandler) cleanup() {
 
 	// Unregister from abort manager (last step after all cleanup)
 	if h.activeOp != nil {
+		h.activeOp.Cleanup.Done() // Signal cleanup completion
 		h.abortManager.Unregister(h.activeOp)
 		h.activeOp = nil
 	}

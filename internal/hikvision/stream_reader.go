@@ -19,6 +19,7 @@ type AudioStreamReader struct {
 	closeOnce   sync.Once
 	buffer      []byte // Buffer for partial reads
 	bufferMutex sync.Mutex
+	wg          sync.WaitGroup // Wait for streamLoop to complete
 }
 
 // NewAudioStreamReader creates a new continuous audio stream reader
@@ -41,11 +42,14 @@ func (c *Client) NewAudioStreamReader(session *AudioSession) *AudioStreamReader 
 // Start begins the continuous streaming
 func (a *AudioStreamReader) Start() {
 	log.Printf("[Hikvision] AudioStreamReader: Starting stream for channel %s", a.session.ChannelID)
+	a.wg.Add(1)
 	go a.streamLoop()
 }
 
 // streamLoop continuously reads audio data from a single persistent connection
 func (a *AudioStreamReader) streamLoop() {
+	defer a.wg.Done()
+
 	// Make a single GET request that stays open
 	req, err := http.NewRequest("GET", a.url, nil)
 	if err != nil {
@@ -144,10 +148,12 @@ func (a *AudioStreamReader) Read(p []byte) (int, error) {
 	}
 }
 
-// Close stops the audio stream
+// Close stops the audio stream and waits for cleanup to complete
 func (a *AudioStreamReader) Close() error {
 	a.closeOnce.Do(func() {
 		close(a.stopChan)
+		a.wg.Wait() // Wait for streamLoop to complete cleanup
+		log.Printf("[Hikvision] AudioStreamReader: Cleanup complete for channel %s", a.session.ChannelID)
 	})
 	return nil
 }

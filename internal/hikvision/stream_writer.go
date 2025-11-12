@@ -22,6 +22,7 @@ type AudioStreamWriter struct {
 	dataChan  chan []byte
 	errChan   chan error
 	closeOnce sync.Once
+	wg        sync.WaitGroup // Wait for sendLoop to complete
 }
 
 // NewAudioStreamWriter creates a new continuous audio stream writer
@@ -44,11 +45,14 @@ func (c *Client) NewAudioStreamWriter(session *AudioSession) *AudioStreamWriter 
 // Start begins the continuous sending loop
 func (w *AudioStreamWriter) Start() {
 	log.Printf("[Hikvision] AudioStreamWriter: Starting stream for channel %s", w.session.ChannelID)
+	w.wg.Add(1)
 	go w.sendLoop()
 }
 
 // sendLoop continuously sends audio data via a persistent connection
 func (w *AudioStreamWriter) sendLoop() {
+	defer w.wg.Done()
+
 	// Create a custom transport that gives us access to the connection
 	var conn net.Conn
 
@@ -188,10 +192,12 @@ func (w *AudioStreamWriter) Write(p []byte) (n int, err error) {
 	}
 }
 
-// Close stops the audio stream writer
+// Close stops the audio stream writer and waits for cleanup to complete
 func (w *AudioStreamWriter) Close() error {
 	w.closeOnce.Do(func() {
 		close(w.stopChan)
+		w.wg.Wait() // Wait for sendLoop to complete cleanup
+		log.Printf("[Hikvision] AudioStreamWriter: Cleanup complete for channel %s", w.session.ChannelID)
 	})
 	return nil
 }

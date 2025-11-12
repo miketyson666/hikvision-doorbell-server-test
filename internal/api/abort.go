@@ -19,8 +19,9 @@ const (
 
 // Operation represents a tracked operation
 type Operation struct {
-	Type   OperationType
-	Cancel context.CancelFunc
+	Type    OperationType
+	Cancel  context.CancelFunc
+	Cleanup *sync.WaitGroup // WaitGroup to track cleanup completion
 }
 
 func (o *Operation) IsPlayFile() bool {
@@ -51,9 +52,13 @@ func (am *AbortManager) Register(opType OperationType, cancel context.CancelFunc
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
+	wg := &sync.WaitGroup{}
+	wg.Add(1) // Will be Done() when cleanup completes
+
 	op := &Operation{
-		Type:   opType,
-		Cancel: cancel,
+		Type:    opType,
+		Cancel:  cancel,
+		Cleanup: wg,
 	}
 	am.activeOps = append(am.activeOps, op)
 	log.Printf("[AbortManager] Registered operation (type: %d)", opType)
@@ -75,17 +80,19 @@ func (am *AbortManager) Unregister(op *Operation) {
 }
 
 // AbortPlayFileOperations cancels only play-file operations (not WebRTC)
+// and waits for their cleanup to complete to avoid race conditions
 func (am *AbortManager) AbortPlayFileOperations(ctx context.Context) {
 	am.mu.Lock()
-	defer am.mu.Unlock()
 
 	playFileOps := 0
 	newActiveOps := make([]*Operation, 0)
+	waitGroups := make([]*sync.WaitGroup, 0)
 
 	for _, op := range am.activeOps {
 		if op.IsPlayFile() {
 			log.Printf("[AbortManager] Cancelling play-file operation")
 			op.Cancel()
+			waitGroups = append(waitGroups, op.Cleanup)
 			playFileOps++
 		} else {
 			newActiveOps = append(newActiveOps, op)
@@ -93,7 +100,22 @@ func (am *AbortManager) AbortPlayFileOperations(ctx context.Context) {
 	}
 
 	am.activeOps = newActiveOps
-	log.Printf("[AbortManager] Aborted %d play-file operations", playFileOps)
+	am.mu.Unlock()
+
+	// Wait for all play-file operations to complete cleanup
+	log.Printf("[AbortManager] Waiting for %d play-file operations to complete cleanup", playFileOps)
+	for _, wg := range waitGroups {
+		wg.Wait()
+	}
+	log.Printf("[AbortManager] All play-file operations cleaned up")
+}
+
+// HasActiveOperation returns true if there's an active session
+func (am *AbortManager) HasActiveOperation() bool {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	return len(am.activeOps) > 0
 }
 
 // HasActiveWebRTC returns true if there's an active WebRTC session
@@ -112,18 +134,29 @@ func (am *AbortManager) HasActiveWebRTC() bool {
 // AbortAll cancels all active operations and closes all audio channels
 func (am *AbortManager) AbortAll(ctx context.Context) error {
 	am.mu.Lock()
-	defer am.mu.Unlock()
 
 	log.Printf("[AbortManager] Aborting %d active operations", len(am.activeOps))
+
+	// Collect all cleanup wait groups before clearing operations
+	waitGroups := make([]*sync.WaitGroup, 0, len(am.activeOps))
 
 	// Cancel all active operations
 	for _, op := range am.activeOps {
 		log.Printf("[AbortManager] Cancelling operation (type: %d)", op.Type)
 		op.Cancel()
+		waitGroups = append(waitGroups, op.Cleanup)
 	}
 
 	// Clear the slice
 	am.activeOps = make([]*Operation, 0)
+	am.mu.Unlock()
+
+	// Wait for all operations to complete cleanup
+	log.Printf("[AbortManager] Waiting for %d operations to complete cleanup", len(waitGroups))
+	for _, wg := range waitGroups {
+		wg.Wait()
+	}
+	log.Printf("[AbortManager] All operations cleaned up")
 
 	// List all channels and close any that are enabled (in use)
 	channels, err := am.sessionManager.ListChannels(ctx)
