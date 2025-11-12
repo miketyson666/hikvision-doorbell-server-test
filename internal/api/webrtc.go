@@ -41,7 +41,8 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.Unlock()
 
 	// Create context for managing goroutines lifecycle
-	ctx, cancel := context.WithCancel(r.Context())
+	// Use Background() instead of r.Context() so streaming continues after HTTP handler returns
+	ctx, cancel := context.WithCancel(context.Background())
 	h.cancelFunc = cancel
 
 	// Parse SDP offer
