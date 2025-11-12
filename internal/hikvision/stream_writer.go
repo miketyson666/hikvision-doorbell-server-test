@@ -66,8 +66,8 @@ func (w *AudioStreamWriter) sendLoop() {
 	// Create HTTP client with our transport wrapped in digest auth
 	client := &http.Client{
 		Transport: &digest.Transport{
-			Username: w.client.username,
-			Password: w.client.password,
+			Username:  w.client.username,
+			Password:  w.client.password,
 			Transport: transport,
 		},
 	}

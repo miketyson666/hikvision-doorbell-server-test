@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/acardace/hikvision-doorbell-server/internal/hikvision"
+	"github.com/acardace/hikvision-doorbell-server/internal/session"
 )
 
 // HandlePlayFile handles uploading and playing an audio file
 // This automatically manages the session lifecycle
 func HandlePlayFile(hikClient *hikvision.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		log.Println("[PlayFile] Received request to play audio file")
 
 		// Read uploaded file
@@ -42,38 +44,9 @@ func HandlePlayFile(hikClient *hikvision.Client) http.HandlerFunc {
 
 		log.Printf("[PlayFile] Read %d bytes of audio data", len(audioData))
 
-		// Get available channels
-		channels, err := hikClient.GetTwoWayAudioChannels()
-		if err != nil {
-			log.Printf("[PlayFile] Failed to get channels: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to get channels: %v", err), http.StatusInternalServerError)
-			return
-		}
+		sessionManager := session.NewHikvisionSessionManager(hikClient)
 
-		if len(channels.Channels) == 0 {
-			log.Println("[PlayFile] No audio channels available")
-			http.Error(w, "No audio channels available", http.StatusNotFound)
-			return
-		}
-
-		// Find first available channel (enabled=false means available)
-		var channelID string
-		for _, ch := range channels.Channels {
-			if ch.Enabled == "false" {
-				channelID = ch.ID
-				break
-			}
-		}
-
-		if channelID == "" {
-			log.Println("[PlayFile] No available channels (all in use)")
-			http.Error(w, "No available channels (all in use)", http.StatusConflict)
-			return
-		}
-
-		// Open audio channel
-		log.Printf("[PlayFile] Opening audio channel %s...", channelID)
-		session, err := hikClient.OpenAudioChannel(channelID)
+		session, err := sessionManager.AcquireChannel(ctx)
 		if err != nil {
 			log.Printf("[PlayFile] Failed to open audio channel: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to open audio channel: %v", err), http.StatusInternalServerError)
@@ -83,13 +56,16 @@ func HandlePlayFile(hikClient *hikvision.Client) http.HandlerFunc {
 		// Ensure we close the channel when done
 		defer func() {
 			log.Println("[PlayFile] Closing audio channel...")
-			if err := hikClient.CloseAudioChannel(session.ChannelID); err != nil {
-				log.Printf("[PlayFile] Warning: Failed to close channel: %v", err)
-			}
+			sessionManager.ReleaseChannel(ctx, session.ChannelID)
 		}()
 
 		// Create audio writer
-		writer := hikClient.NewAudioStreamWriter(session)
+		hikvisionSession := hikvision.AudioSession{
+			ChannelID: session.ChannelID,
+			SessionID: session.SessionID,
+		}
+
+		writer := hikClient.NewAudioStreamWriter(&hikvisionSession)
 		writer.Start()
 		defer writer.Close()
 
@@ -99,17 +75,22 @@ func HandlePlayFile(hikClient *hikvision.Client) http.HandlerFunc {
 		log.Printf("[PlayFile] Sending %d chunks...", totalChunks)
 
 		for i := 0; i < len(audioData); i += chunkSize {
-			end := i + chunkSize
-			if end > len(audioData) {
-				end = len(audioData)
-			}
-
-			chunk := audioData[i:end]
-			_, err := writer.Write(chunk)
-			if err != nil {
-				log.Printf("[PlayFile] Failed to write chunk: %v", err)
-				http.Error(w, "Failed to send audio", http.StatusInternalServerError)
+			select {
+			case <-ctx.Done():
 				return
+			default:
+				end := i + chunkSize
+				if end > len(audioData) {
+					end = len(audioData)
+				}
+
+				chunk := audioData[i:end]
+				_, err := writer.Write(chunk)
+				if err != nil {
+					log.Printf("[PlayFile] Failed to write chunk: %v", err)
+					http.Error(w, "Failed to send audio", http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 
@@ -119,9 +100,14 @@ func HandlePlayFile(hikClient *hikvision.Client) http.HandlerFunc {
 		// G.711 is 8000 bytes/sec
 		audioDuration := time.Duration(len(audioData)) * time.Second / 8000
 		log.Printf("[PlayFile] Waiting %.2f seconds for playback to complete...", audioDuration.Seconds())
-		time.Sleep(audioDuration)
 
-		log.Println("[PlayFile] Playback complete")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(audioDuration):
+			log.Println("[PlayFile] Playback complete")
+		}
+
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Audio played successfully"))
 	}

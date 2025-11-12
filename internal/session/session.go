@@ -24,7 +24,4 @@ type SessionManager interface {
 
 	// ReleaseChannel closes an audio channel by its ID
 	ReleaseChannel(ctx context.Context, channelID string) error
-
-	// GetAvailableChannels returns the list of available channel IDs
-	GetAvailableChannels(ctx context.Context) ([]string, error)
 }

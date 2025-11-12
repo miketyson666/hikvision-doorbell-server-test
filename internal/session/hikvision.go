@@ -91,20 +91,3 @@ func (m *HikvisionSessionManager) ReleaseChannel(ctx context.Context, channelID 
 
 	return nil
 }
-
-// GetAvailableChannels returns the list of available channel IDs
-func (m *HikvisionSessionManager) GetAvailableChannels(ctx context.Context) ([]string, error) {
-	channels, err := m.client.GetTwoWayAudioChannels()
-	if err != nil {
-		return nil, err
-	}
-
-	var available []string
-	for _, ch := range channels.Channels {
-		if ch.Enabled == "false" {
-			available = append(available, ch.ID)
-		}
-	}
-
-	return available, nil
-}

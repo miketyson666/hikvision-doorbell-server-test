@@ -71,11 +71,11 @@ func convertToG711u(inputFile string) ([]byte, error) {
 	// Build ffmpeg command to convert to G.711 µ-law
 	args := []string{
 		"-i", inputFile,
-		"-ar", "8000",      // Sample rate: 8000 Hz
-		"-ac", "1",         // Channels: mono
+		"-ar", "8000", // Sample rate: 8000 Hz
+		"-ac", "1", // Channels: mono
 		"-acodec", "pcm_mulaw",
 		"-f", "mulaw",
-		"-",                // Output to stdout
+		"-", // Output to stdout
 	}
 
 	ffmpegCmd := exec.Command("ffmpeg", args...)
