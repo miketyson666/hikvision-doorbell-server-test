@@ -23,19 +23,29 @@ make build
 ./doorbell-server -config config.yaml
 ```
 
-### Container
+### Docker Compose
 
 ```bash
-# Pull from GitHub Container Registry
-docker pull ghcr.io/acardace/hikvision-doorbell-server:latest
-
-# Or build locally
-docker build -t hikvision-doorbell-server -f Containerfile .
+cd deploy/docker
+# Edit docker-compose.yaml with your configuration
+docker compose up -d
 ```
+
+See [deploy/docker/docker-compose.yaml](deploy/docker/docker-compose.yaml) for the full example.
 
 ### Kubernetes
 
-Create a ConfigMap for the server configuration:
+```bash
+cd deploy/k8s
+# Edit configmap.yaml with your doorbell credentials
+# Edit deployment.yaml with your public IP
+# Edit httproute.yaml with your hostname
+kubectl apply -f .
+```
+
+See [deploy/k8s/](deploy/k8s/) for all manifests.
+
+Example ConfigMap for the server configuration:
 
 ```yaml
 # configmap.yaml

@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hikvision-doorbell-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hikvision-doorbell
+  template:
+    metadata:
+      labels:
+        app: hikvision-doorbell
+    spec:
+      containers:
+      - name: server
+        image: ghcr.io/acardace/hikvision-doorbell-server:latest
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 50000
+          name: webrtc
+          protocol: UDP
+        env:
+        - name: WEBRTC_PUBLIC_IP
+          value: "203.0.113.10"  # Replace with your public IP for WebRTC
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config
+        configMap:
+          name: doorbell-config

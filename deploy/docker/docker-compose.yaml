@@ -1,0 +1,12 @@
+services:
+  hikvision-doorbell-server:
+    image: ghcr.io/acardace/hikvision-doorbell-server:latest
+    container_name: hikvision-doorbell-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"      # HTTP API
+      - "50000:50000/udp" # WebRTC
+    environment:
+      - WEBRTC_PUBLIC_IP=203.0.113.10  # Replace with your public IP for WebRTC
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro

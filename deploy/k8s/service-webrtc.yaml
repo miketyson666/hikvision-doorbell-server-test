@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hikvision-doorbell-webrtc
+spec:
+  type: LoadBalancer
+  selector:
+    app: hikvision-doorbell
+  ports:
+  - port: 50000
+    targetPort: 50000
+    protocol: UDP
+    name: webrtc
