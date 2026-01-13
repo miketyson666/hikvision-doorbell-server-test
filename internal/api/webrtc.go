@@ -242,7 +242,7 @@ func (h *WebRTCHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
 
 	// Send answer back to client (now with all ICE candidates)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:8080")
+	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:8081")
 	json.NewEncoder(w).Encode(peerConnection.LocalDescription())
 
 	logger.Log.Info("SDP answer sent successfully", slog.String("component", "webrtc"))
